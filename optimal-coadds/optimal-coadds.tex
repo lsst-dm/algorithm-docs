@@ -32,165 +32,205 @@ Coaddition is one of the most important steps in any astronomical image processi
 
 The most common approaches to coaddition discard information.  PSF-matched coaddition explicitly destroys information by degrading the PSF of the best images to match the worst, or by rejecting the worst-seeing images entirely to improve the quality of the common PSF.  PSF-matched coaddition does lead to a well-defined and computationally effecient PSF, even when nonlinear statistics (for outlier rejection) are used to combine pixels.  Direct coaddition, which simply averages images directly, underweights the best-seeing images as well.  Nonlinear statistics cannot be used in direct coaddition, because the differing PSFs on input images mean that the value at a particular point on the sky is drawn from different distribution on different images.  To model the PSF on a direct coadd, it is necessary to combine the PSF models of individual exposures using the same resampling and weighting applied to the coadd.  This makes it virtually impossible for the model to be valid in regions where one or more images had masked pixels, and even a model that is only valid outside those region is a very complex data structure.  It is also rare in both methods to fully capture the correlations between pixels introduced by image resampling or (for PSF-matched coadds) convolution with a matching kernel.  In fact, fully accounting for the (spatially-varying) pixel covariance matrix is likely computationally infeasible.
 
-In this paper, we will focus instead on coaddition methods that are either optimal (in the sense that they do not destroy information) or very close to optimal.  These methods are not yet a part of any major processing pipeline, though in some cases the theory behind them has been common knowledge in astronomy for decades.  In section~\ref{sec:detection-maps}, we introduce the likelihood formalism that ties together all of these methods, and extend a common method for single-frame source detection to a fully-general and exact (but computationally impractical) coaddition scheme.  In section~{sec:kaiser-coadds}, we discuss a variant originally developed by \cite{Kaiser2001} and recently tested by \cite{2015arXiv151206879Z} that solves the computational challenge for (unrealistically) simple images.  In section~{sec:decorrelated-coadds}, we generalize Kaiser's approach to realistic images, resulting in an algorithm that may be computationally feasible (but still extremely challenging) with suitably clever numerical techniques.
+In this paper, we will focus instead on coaddition methods that are either optimal (in the sense that they do not destroy information) or very close to optimal.  These methods are not yet a part of any major processing pipeline, though in some cases the theory behind them has been common knowledge in astronomy for decades.  In section~\ref{sec:likelihood-coadds}, we introduce the likelihood formalism that ties together all of these methods, and extend a common method for single-frame source detection to a fully-general and exact (but computationally impractical) coaddition scheme.  In section~{sec:kaiser-coadds}, we discuss a variant originally developed by \cite{Kaiser2001} and recently tested by \cite{2015arXiv151206879Z} that solves the computational challenge for (unrealistically) simple images.  In section~{sec:decorrelated-coadds}, we generalize Kaiser's approach to realistic images, resulting in an algorithm that may be computationally feasible (but still extremely challenging) with suitably clever numerical techniques.
 
-\section{Detection Maps}
-\label{sec:detection-maps}
+\section{Likelihood Coadds}
+\label{sec:likelihood-coadds}
 
 \subsection{Likelihood for Pixel Data}
+\label{sec:pixel-likelihood}
 
-We begin with an arbitrary model of the true sky $f(\bm{r}, \bm{\theta})$, parameterized on the sky position (two-element vector $\bm{r}$) and an arbitrary parameter vector $\bm{\theta}$.  In the usual many-photon limit, we can approximate the noise as Gaussian, and hence the negative log likelihood of a single image $\bm{I}$ is
+We begin with an arbitrary model of the true sky $f(\bm{r})$, parameterized on the sky position (two-element vector $\bm{r}$) and an arbitrary parameter vector $\bm{\theta}$.  In the usual many-photon limit, we can approximate the noise as Gaussian, and hence the negative log likelihood of a single image $I$ (with covariance matrix $\bm{C}=\bm{F}^{-1}$) is
 \begin{align}
-    L(\bm{\theta}) \equiv\;& -\ln P(\bm{I}|\bm{\theta}) \\
-    =\;& \frac{1}{2}
-        \left[\bm{I} - \bm{g}(\bm{\theta})\right]^T
-        \bm{\Sigma}^{-1}
-        \left[\bm{I} - \bm{g}(\bm{\theta})\right]
+    L \equiv\;& -\ln P(\bm{I}|f) \\
+    =\;& \frac{1}{2} \sum_{i,j}
+        \left[I(\bm{x}_i) - g(\bm{x}_i)\right]
+        F(\bm{x}_i,\bm{x}_j)
+        \left[I(\bm{x}_j) - g(\bm{x}_j)\right]
+    \label{eqn:original-likelihood}
 \end{align}
 with
 \begin{align}
-g_i(\bm{\theta}) \equiv\;&
-    \int\! d^2 \,\phi(\bm{x}_i,\bm{r})
-        f(\bm{r},\bm{\theta})
+g(\bm{x}_i) \equiv\;&
+    \int\! d^2 \bm{r} \, \phi(\bm{x}_i,\bm{r}) \, f(\bm{r})
+    \label{eqn:convolved-model-def}
 \end{align}
-and $\phi(\bm{x},\bm{r})$ relates a sky value at $\bm{r}$ to discrete pixel $\bm{x}_i$, encompassing the full spatially-varying point spread function (including the pixel response) as well as any photometric and astrometric transformations.  That means $\phi$ is not normalized to one, but we've also made no assumptions about the image being Nyquist sampled (or even regularly sampled).  We've also made no assumptions about the noise (beyond Gaussianity) in using the full covariance matrix $\bm{\Sigma}$, but we note that in practice this is always diagonal or very nearly diagonal, so computing the inverse is not a major concern.
+and $\phi(\bm{x},\bm{r})$ relates a sky value at $\bm{r}$ to a discrete pixel at $\bm{x}$, encompassing the full spatially-varying point spread function (including the pixel response) as well as any photometric and astrometric transformations.  That means $\phi$ is not normalized to one, but we've also made no assumptions about the image being Nyquist sampled (or even regularly sampled).  We've also made no assumptions about the noise (beyond Gaussianity) in using the full covariance matrix $\Sigma$, but we note that in practice this is always diagonal or very nearly diagonal, so computing the inverse is not a major concern.
 
-By expanding this product, we can focus on the terms that are independent of the model $f$:
+We can write the likelihood in matrix notation as
 \begin{align}
-L(\bm{\theta})
-    =\;& \frac{1}{2}\bm{I}^T\bm{\Sigma}^{-1}\bm{I}
-        - \bm{I}^T\bm{\Sigma}^{-1}\bm{g}(\bm{\theta})
-        + \frac{1}{2}\left[\bm{g}(\bm{\theta})\right]^T\bm{\Sigma}^{-1}
-            \left[\bm{g}(\bm {\theta})\right] \\
-    =\;& \frac{k}{2}
-        - \int\!d^2 \bm{r}\,
-                f(\bm{r},\bm{\theta}) \,
-                \Psi(\bm{r})
-        + \frac{1}{2}
-            \int\!d^2\bm{r}_1 \int\!d^2\bm{r}_2 \,
-                f(\bm{r}_1,\bm{\theta}) \, f(\bm{r}_2,\bm{\theta}) \,
-                \Phi(\bm{r}_1,\bm{r}_2)
-\label{eqn:lik-expansion}
+L =\;& \frac{1}{2}
+        \left(\bm{I} - \bm{g}\right)^T\!
+        \bm{F}
+        \left(\bm{I} - \bm{g}\right)
+\end{align}
+and expand the product to
+\begin{align}
+L =\;& \frac{k}{2} - \bm{I}^T\!\bm{F}\bm{g}
+        + \frac{1}{2}\bm{g}^T\!\bm{F}\bm{g}
+        \label{eqn:expanded-likelihood}
 \end{align}
 with
 \begin{align}
-k \equiv\;& \sum_{i,j} I_i\, I_j\, \left[\Sigma^{-1}\right]_{i,j}
-    \label{eqn:k-def}\\
-\Psi(\bm{r}) \equiv\;& \sum_{i,j}
-    \phi(\bm{x}_i,\bm{r}) \, I_j \, \left[\Sigma^{-1}\right]_{i,j}
+k \equiv\;&
+    \bm{I}^T\!\bm{F} \bm{I}
+    \label{eqn:k-def}
+\end{align}
+
+Because the PSF acts as a low-pass filter, we can choose some grid in sky coordinates\footnote{We are ignoring the curvature of the sky, as we are only concerned with small regions} on which it is well-sampled.  For such a grid $\bm{s}_i$, we can reconstruct the continuous PSF for a discrete output pixel exactly using sinc interpolation:
+\begin{align}
+\phi(\bm{r},\bm{x}_i) =\;& \sum_{i} \phi(\bm{s}_i,\bm{x}_j)\,
+    S(\bm{r}-\bm{s}_i)
+    \label{eqn:phi-interpolated}
+\end{align}
+where $S(\bm{r})$ is a normalized 2-d Sinc kernel.  We can thus write the PSF-convolved model as
+\begin{align}
+g(\bm{x}_i) =\;& \sum_{j} \phi(\bm{s}_j,\bm{x}_i)
+    \int\! d^2 \bm{r} \, S(\bm{r}-\bm{s}_j) \, f(\bm{r}) \\
+    =\;& \sum_{j} \phi(\bm{s}_j,\bm{x}_i) \, h(\bm{s}_j)
+\end{align}
+with
+\begin{align}
+h(\bm{s}) \equiv\;& \int\! d^2 \bm{r} \, S(\bm{r}-\bm{s}) \, f(\bm{r})
+\end{align}
+Note that we have not assumed here that $f(\bm{r})$ is well-sampled, and we have made no approximations to the true PSF.  The discrete version of $\phi(\bm{s}_i,\bm{x}_i)$ is a large rectangular matrix, mapping pixels on input images to the output pixel grid.  Because the PSF kernel is compact spatially, it is sparse with a very predictable structure, but the number of nonzero elements is nevertheless large.
+
+Substituting these definitions into the likelihood \eqnref{expanded-likelihood}, we have (in matrix notation):
+\begin{align}
+L
+=\;&
+    \frac{k}{2} - \bm{I}^T \! \bm{F} \bm{\phi} \bm{h}
+    + \frac{1}{2} \bm{h}^T \! \bm{\phi}^T \! \bm{F} \bm{\phi} \bm{h} \\
+=\;& \frac{k}{2} - \bm{\Psi}^T\!\bm{h} + \frac{1}{2}\bm{h}^T\!\bm{\Phi}\bm{h}
+\label{eqn:expanded-likelihood-new}
+\end{align}
+with
+\begin{align}
+\bm{\Psi} \equiv\;& \bm{\phi}^T\!\bm{F} \bm{I}
     \label{eqn:psi-def}
     \\
-\Phi(\bm{r}_1,\bm{r}_2) \equiv\;&
-    \sum_{i,j}
-        \phi(\bm{x}_i,\bm{r}_1) \, \phi(\bm{x}_j,\bm{r}_2)
-        \left[\Sigma^{-1}\right]_{i,j}
+\bm{\Phi} \equiv\;& \bm{\phi}^T\!\bm{F} \bm{\phi}
 \label{eqn:phi-def}
 \end{align}
 
-\subsection{Discretization}
-
-As we have defined them thus far, $\Phi$ and $\Psi$ are continuous functions, but we can straightforwardly sample them on a discrete regular grid in $\bm{r}$:
+Note that \eqnref{expanded-likelihood-new} has exactly the same form as \eqnref{expanded-likelihood}, with the following substitutions:
 \begin{align}
-\hat{\Psi}_{i} \equiv\; & \Psi(\bm{r}_i) \\
-\hat{\Phi}_{i,j} \equiv\; & \Phi(\bm{r}_i,\bm{r}_j) \\
+\bm{F}\bm{I} \longrightarrow  \bm{\Psi} \\
+\bm{F} \longrightarrow \bm{\Phi} \\
+\bm{g} \longrightarrow \bm{h}
 \end{align}
-It is always possible to construct a grid $\bm{r}$ such that $\bm{\Psi}$ and $\bm{\Phi}$ are Nyquist-sampled, because the PSFs of the input images ensure that both quantities have a maximum spatial frequency.  This allows us to reconstruct the continuous functions exactly using sinc interpolation:
-\begin{align}
-\Phi(\bm{r}_1,\bm{r}_2) =\;& \sum_{i,j} \hat{\Phi}_{i,j}
-    S(\bm{r}_i-\bm{r}_1) S(\bm{r}_j-\bm{r}_2)
-    \label{eqn:phi-interpolated}\\
-\Psi(x) =\;& \sum_i
-    \hat{\Psi}_{i} S(\bm{r}_i-\bm{r}_1)
-    \label{eqn:psi-interpolated}
-\end{align}
-where $S(\bm{r})$ is a normalized 2-d Sinc kernel.  We can now rewrite the full negative log-likelihood as
-\begin{align}
-L(\bm{\theta}) =\;& \frac{k}{2}
-        - \sum_i \hat{\Psi}_i h_i(\bm{\theta})
-        + \frac{1}{2} \sum_{i,j}
-            \hat{\Phi}_{i,j} h_{i}(\bm{\theta}) h_j(\bm{\theta})\\
-    =\;& \frac{k}{2}
-        - \hat{\bm{\Psi}}^T\left[\bm{h}(\bm{\theta})\right]
-        + \frac{1}{2}
-                \left[\bm{h}(\bm{\theta})\right]^T
-                \hat{\bm{\Phi}}
-                \left[\bm{h}(\bm{\theta})\right]\\
-    \label{eqn:lik-from-samples}
-\end{align}
-with
-\begin{align}
-    h_{i}(\bm{\theta}) =
-        \int\!d^2\bm{r}\,S(\bm{r}_i - \bm{r})\,f(\bm{r},\bm{\theta})
-    \label{eqn:sinc-convolved-model}
-\end{align}
-This equation has exactly the same form as \eqnref{lik-expansion}, with the following substitutions:
-\begin{align}
-\bm{I} \longrightarrow & \bm{\hat{\Psi}} \\
-\bm{\Sigma}^{-1} \longrightarrow & \bm{\hat{\Phi}} \\
-\phi \longrightarrow & S
-\end{align}
-That is, we have defined a statistically equivalent image $\Psi$ with a compact and spatially invariant PSF $S$ but a much more extended and spatially complex pixel covariance matrix $\Phi$.
+That is, we have defined anequivalent image $\Psi$ with a compact and spatially invariant PSF $S$ but a much more extended and spatially complex pixel covariance matrix $\Phi^{-1}$; we have transform the PSF from an operation on the model to a component of the image and its covariance matrix.
 
 \subsection{Coaddition}
 
-So far, we've been dealing with a single image, but it is now trivially easy to extend to multiple images.  Because $L$ is linear in $\hat{\Phi}$ and $\hat{\Psi}$, and our grid is chosen to be in sky coordinates, we can simply sum the $k$, $\hat{\Psi}$, and $\hat{\Phi}$ quantities from each image, and then reinterpret \eqnref{lik-from-samples} as the negative log likelihood of the full ensemble of images.  This relationship is exact, which means $k$, $\hat{\Psi}$, and $\hat{\Phi}$ are a sufficient statistic, and no information is lost.
+So far, we've been dealing with a single image, but it is now trivially easy to extend to multiple images.  The likelihood of our model $f$ given multiple images $\bm{I}_i$ is just the product of the per-image likelihoods:
+\begin{align}
+    P(\{\bm{I}\}|f) = \prod_n P(\bm{I}_n|f)
+\end{align}
+which is equivalent to summing the (negative) log likelihoods:
+\begin{align}
+    L = \sum_n L_n =
+        \sum_n \left[ \frac{k_n}{2} - \bm{\Psi}_n^T\!\bm{h}
+        + \frac{1}{2}\bm{h}^T\!\bm{\Phi}_n\bm{h} \right]
+\end{align}
+Because the grid on which we evaluate $\bm{h}$ is in sky coordinates, we can choose it to be the same for every input image (the only requirement is that it be fine enough to adequately sample the most compact input PSF).
+This makes $L$ linear in $\bm{\Psi}_i$ and $\bm{\Phi}_i$, so we can just sum these:
+\begin{align}
+    L =\;& \frac{k_c}{2} - \bm{\Psi}_c^T\!\bm{h} + \frac{1}{2}\bm{h}^T\!\bm{\Phi}_c\bm{h} \\
+    k_c \equiv\;& \sum_n k_n \\
+    \bm{\Psi}_c \equiv\;& \sum_n \bm{\Psi}_n \\
+    \bm{\Phi}_c \equiv\;& \sum_n \bm{\Phi}_n
+\end{align}
+This is clearly the same as \eqnref{expanded-likelihood-new}, with the coadded $k$, $\bm{\Psi}$ and $\bm{\Phi}$ replacing the single-epoch ones.  This coadd is a ``sufficient statistic'' -- it allows us to exactly compute a the likelihood for any arbitrary model -- for the full dataset, with only two assumptions:
+\begin{itemize}
+\item The true sky must be the same at all epochs (no variability or motion).
+\item We must be able to choose a common grid on which all input PSFs are well-sampled.
+\end{itemize}
+The second condition is always met by real data, and any kind of coadd is inappropriate when the former is not a reasonable approximation.
 
-Unfortunately, this approach is likely computationally impractical in general.  The simplest reason is that the covariance matrix $\Phi$ is enormous.  For a typical $4000 \times 4000$ coadd image comprised of images with $40\times 40$-pixel PSFs, $\Phi$ will have approximately $5.1\times 10^10$ nonzero elements (205 GB in single precision).  Some of that information is certainly redundant, and a clever compression scheme may be able to reduce the size considerably.  But even in this case, the extent of the covariance matrix would make it more difficult to use the likelihood in this form, mostly because common algorithms such as aperture photometry and weighted-moment shapes implicitly assume independent pixels.  The computational tradeoffs for forward-modeling algorithms is less clear; the number of pixels on which a model much be evaluated will increase, even if the PSF is approximated by a Lanczos kernel instead of a full sinc function.  But the fact that the PSF is the same everywhere may enable fast lookup-table methods for model evaluation.
+Unfortunately, this approach is likely computationally impractical in general.  The simplest reason is that $\bm{\Phi}$ is enormous.  For a typical $4000 \times 4000$ coadd image comprised of images with $40\times 40$-pixel PSFs, $\bm{\Phi}$ will have approximately $5.1\times 10^10$ nonzero elements (205 GB in single precision).  Some of that information is certainly redundant, and a clever compression scheme may be able to reduce the size considerably.  But even in this case, the extent of the covariance matrix ($\bm{\Phi}^{-1}$) would make it more difficult to use the likelihood in this form, mostly because common algorithms such as aperture photometry and weighted-moment shapes implicitly assume independent pixels.  The computational tradeoffs for forward-modeling algorithms are less clear; the fact that the effective PSF -- now just a Sinc kernel -- is the same everywhere may enable fast lookup-table methods for model evaluation.
 
-\subsection{Source Detection}
+\subsection{Detection Maps}
 
 One area where $\Psi$ and $\Phi$ are practical (and in frequent use) is source detection.  The traditional approach to source detection assumes a single point source model, with any background already subtracted from the image:
 \begin{align}
-f(\bm{r},\bm{c},\alpha) =\;& \alpha\,\delta(\bm{c}-\bm{r})
+f(\bm{r},\bm{c},\alpha) =\;& \alpha\,\delta(\bm{\mu}-\bm{r})
 \end{align}
-where $\alpha$ is the flux and $\bm{c}$ is the position.  The negative log likelihood then reduces to
+where $\alpha$ is the flux and $\bm{\mu}$ is the position.  The negative log likelihood (either on a single image or a coadd) then reduces to
 \begin{align}
 L(\bm{c},\alpha) =\;& \frac{k}{2}
-        - \alpha \sum_i \hat{\Psi}_i S(\bm{r}_i-\bm{c})
+        - \alpha \sum_i \Psi(\bm{s}_i)\,S(\bm{s}_i-\bm{\mu})
         + \frac{\alpha^2}{2} \sum_{i,j}
-            \hat{\Phi}_{i,j} S(\bm{r}_i-\bm{c}) S(\bm{r}_j - \bm{c})
+            \Phi(\bm{s}_i,\bm{s}_j)\,S(\bm{s}_i-\bm{\mu})
+                \,S(\bm{r}_j - \bm{\mu})
 \end{align}
-The sinc kernels $S$ are orthogonal, which simplifies the above to
+The sinc kernels $S$ are orthogonal on the grid $\bm{s}_i$, which simplifies the above to
 \begin{align}
 L(\bm{c},\alpha) =\;& \frac{k}{2}
-        - \alpha \sum_i \hat{\Psi}_i S(\bm{r}_i-\bm{c})
+        - \alpha \sum_i \Psi(\bm{s}_i) S(\bm{s}_i-\bm{\mu})
         + \frac{\alpha^2}{2} \sum_{i}
-            \hat{\Phi}_{i,i} \left[S(\bm{r}_i-\bm{c})\right]^2
+            \Phi(\bm{s}_i,\bm{s}_i)\,\left[S(\bm{s}_i-\bm{\mu})\right]^2
 \end{align}
-To actually detect sources, however, we'd like to simply evaluate this likelihood for $\bm{c} = \bm{r}_i$ - that is, consider the hypotheses that there is a point source at each of the positions where we've already evaluated $\hat{\bm{\Psi}}$.\footnote{With most PSFs, this will make us slightly less sensitive to point sources centered immediately between pixels, but we can account for this by just decreasing the threshold slightly.}  Because $S(0)=1$, we then have
+This is the critical simplification: for all subsequent steps in this section, we only require the diagonal of $\bm{\Phi}$, which \emph{is} computationally feasible to evaluate and store.
+
+To detect sources, we'd like to simply evaluate this likelihood for $\bm{\mu} = \bm{s}_i$ - that is, consider the hypotheses that there is a point source at each of the positions where we've already evaluated $\bm{\Psi}$.\footnote{With most PSFs, this will make us slightly less sensitive to point sources centered immediately between pixels, but we can account for this by just decreasing the threshold slightly.}  Because $S(0)=1$, we then have
 \begin{align}
-L(\bm{r}_i,\alpha) =\;& \frac{k}{2} -\alpha \hat{\Psi}_i
-    + \frac{\alpha^2}{2} \hat{\Phi}_{i,i}
+L(\bm{s}_i,\alpha) =\;& \frac{k}{2} -\alpha \Psi(\bm{s}_i)
+    + \frac{\alpha^2}{2} \Phi(\bm{s}_i,\bm{s}_i)
 \end{align}
 At each pixel position, we can solve analytically for the maximum likelihood flux of a point source centered on that pixel, by setting the first derivative of $L$ to zero and solving for $\alpha$:
 \begin{align}
 \frac{\partial L}{\partial \alpha} =\;&
-    -\hat{\Psi}_i + \alpha \hat{\Phi}_{i,i} = 0\\
-\bar{\alpha}(\bm{r}_i) =\;& \frac{\hat{\Psi}_i}{\hat{\Phi}_{i,i}}
+    -\Psi(\bm{s}_i) + \alpha \Phi(\bm{s}_i,\bm{s}_i) = 0\\
+\bar{\alpha}(\bm{s}_i) =\;& \frac{\Psi(\bm{s}_i)}{\Phi(\bm{s}_i,\bm{s}_i)}
 \end{align}
-The uncertainty on the maximum likelihood flux (still holding the centroid fixed) is given by
+The uncertainty on the maximum likelihood flux (given the centroid) is given by
 \begin{align}
-\sigma_{\alpha}(\bm{r}_i) =\;&
+\sigma_{\alpha}(\bm{s}_i) =\;&
     \left(\frac{\partial^2 L}{\partial \alpha^2}\right)^{-1/2}
-    =\; \frac{1}{\sqrt{\hat{\Phi}_{i,i}}}
+    =\; \frac{1}{\sqrt{\Phi(\bm{s}_i,\bm{s}_i)}}
 \end{align}
 and hence the signal-to-noise ratio of the flux as a function of position is
 \begin{align}
-\nu(\bm{r}_i) =\;&
-    \frac{\bar{\alpha}(\bm{r}_i)}{\sigma_{\alpha}(\bm{r}_i)} =\;
-    \frac{\hat{\Psi}_i}{\sqrt{\hat{\Phi}_{i,i}}}
+\nu(\bm{s}_i) =\;&
+    \frac{\bar{\alpha}(\bm{s}_i)}{\sigma_{\alpha}(\bm{s}_i)} =\;
+    \frac{\Psi(\bm{s}_i)}{\sqrt{\Phi(\bm{s}_i,\bm{s}_i)}}
 \end{align}
-We detect by appling a threshold to an image of this significance $\nu$.  In common parlance, objects with $\nu>5$ are ``$\sigma$'' detections.  For a given significance, a single above-threshold pixel is sufficient, in contrast to the heuristic requirement for multiple pixels in \textit{e.g.} SExtractor \citep{1996A&AS..117..393B}.
+
+We detect by appling a threshold to a \emph{detection map} - an image of $\nu$.  In common parlance, objects with $\nu>5$ are ``5 sigma'' detections.  For a given significance, a single above-threshold pixel is sufficient, in contrast to the heuristic requirement for multiple pixels in \textit{e.g.} SExtractor \citep{1996A&AS..117..393B}.
 
 Maximum likelihood detections are biased, however, and the significance should not be interpreted as a formal statement about the probability that the detection is real.  In all realistic scenarios the prior cannot be ignored, and it is the posterior probability that must be used when calculating false detection rates.  A simple unnormalized power law prior as proposed by \cite{1998PASP..110..727H} does not work.  For now, we consider this problem beyond the scope of this paper.
 
-With or without a prior, however, it is important to note that the likelihood for isolated point sources utilizes only the diagonal of $\hat{\bm{\Phi}}$, making this approach to detection practical on both individual images and on coadds, even in the presence of noise or on undersampled images.  Extending this approach to resolved sources or multiple sources exactly requires at least some off-diagonal elements of $\hat{\bm{\Phi}}$, addition to solving a higher-dimensional optimization problem.  In practice, it is more common to use the algorithm for isolated point sources to detect superpositions of sources, by identifying peaks in $\nu$ within an above-threshold region as candidates for deblending.  Similarly, simply binning or smoothing the $\nu$ image may result in an adequate approximation for the detection of faint extended sources.
+With or without a prior, however, the fact that isolated point source detection utilizes only the diagonal of $\bm{\Phi}$ holds, making this approach to detection practical on both individual images and on coadds, even in the presence of noise or on undersampled images.  Extending this approach to resolved sources or multiple sources exactly requires at least some off-diagonal elements of $\bm{\Phi}$, in addition to solving a higher-dimensional optimization problem.  In practice, it is more common to use the algorithm for isolated point sources as a heuristic for detecting superpositions of sources, by identifying peaks in $\nu$ within an above-threshold region as candidates for deblending and more careful signal-to-noise evaluation.  Similarly, simply binning or smoothing the $\nu$ image may result in an adequate approximation for the detection of faint extended sources.
 
-\section{Kaiser Coadds}
+\section{Decorrelated Coadds}
+\label{sec:decorrelated-coadds}
+
+
+
+\subsection{Kaiser Coadds}
 \label{sec:kaiser-coadds}
 
-\section{General Decorrelated Coadds}
-\label{sec:decorrelated-coadds}
+The first development of a generally-useful (and at least theoretically practical) optimal coaddition algorithm is due to Kaiser \citep{Kaiser2001}, and more recently revisited by \cite{2015arXiv151206879Z}.  This approach is completely general with respect to the model of the sky, but it relies on several assumptions about the data:
+\begin{itemize}
+\item The input images must be Nyquist-sampled with no missing pixels (to allow discrete Fourier transforms and resampling of the image).
+\item The variance in each input image must be constant and uncorrelated.
+\item The PSF of each input image must be constant.
+\end{itemize}
+At least for ground-based optical data, these assumptions are at least approximately correct in the neighborhood of any particular source, but they are manifestly incorrect on the scale of a full sensor.  However, the method also implicitly assumes that all input images are defined on the same pixel grid.  While images that meet the above requirements can be resampled to the required coordinate system exactly (using sinc interpolation) or close enough to it (using e.g. Lanczos as an approximation to sinc), this resampling will in general introduce correlations in the noise and produce a spatially-varying PSF.
+
+We will ignore these complications for now, however, which lets us rewrite \eqnref{psi-def} and \eqnref{phi-def} in the continuous limit as
+\begin{align}
+\Psi(\bm{r}) =\;& \frac{1}{\sigma^2} \int\!d^2\bm{x}\,
+    \phi(\bm{r}-\bm{x}) \, I(\bm{x})
+    \\
+\Phi(\bm{r}_1,\bm{r}_2) =\;&
+    \frac{1}{\sigma^2} \int\!d^2\bm{x}\,
+    \phi(\bm{r}_1-\bm{x}) \, \phi(\bm{r}_2-\bm{x})
+\end{align}
+where we have redefined the constant point function to $\phi(\bm{x})$, highlighted the $\bm{x}$-dependence of $\bm{I}$, and defined the constant per-pixel variance as $\sigma^2$.  Note that the output coordinate system $\bm{r}$ is the same as the input pixel grid $\bm{x}$
+
+
 
 \bibliographystyle{plainnat}
 \bibliography{references}
