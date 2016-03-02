@@ -55,7 +55,7 @@ g(\bm{x}_i) \equiv\;&
     \int\! d^2 \bm{r} \, \phi(\bm{x}_i,\bm{r}) \, f(\bm{r})
     \label{eqn:convolved-model-def}
 \end{align}
-and $\phi(\bm{x},\bm{r})$ relates a sky value at $\bm{r}$ to a discrete pixel at $\bm{x}$, encompassing the full spatially-varying point spread function (including the pixel response) as well as any photometric and astrometric transformations.  That means $\phi$ is not normalized to one, but we've also made no assumptions about the image being Nyquist sampled (or even regularly sampled).  We've also made no assumptions about the noise (beyond Gaussianity) in using the full covariance matrix $\Sigma$, but we note that in practice this is always diagonal or very nearly diagonal, so computing the inverse is not a major concern.
+and $\phi(\bm{x},\bm{r})$ relates a sky value at $\bm{r}$ to a discrete pixel at $\bm{x}$, encompassing the full spatially-varying point spread function (including the pixel response) as well as any photometric and astrometric transformations.  That means $\phi$ is not normalized to one, but we've also made no assumptions about the image being Nyquist sampled (or even regularly sampled).  Throughout the paper, we will refer to this simply as the PSF, even though it contains the photometric transformation as well, mostly to simplify the notation; it is straightforward (but uninteresting) to separate this quantity into a convolution kernel with unit normalization and a scalar multiplier.  We've also made no assumptions about the noise (beyond Gaussianity) in using the full covariance matrix $\Sigma$, but we note that in practice this is always diagonal or very nearly diagonal, so computing the inverse is not a major concern.
 
 We can write the likelihood in matrix notation as
 \begin{align}
@@ -77,7 +77,10 @@ k \equiv\;&
     \label{eqn:k-def}
 \end{align}
 
-Because the PSF acts as a low-pass filter, we can choose some grid in sky coordinates\footnote{We are ignoring the curvature of the sky, as we are only concerned with small regions} on which it is well-sampled.  For such a grid $\bm{s}_i$, we can reconstruct the continuous PSF for a discrete output pixel exactly using sinc interpolation:
+\subsection{Discretization}
+\label{sec:discretization}
+
+Because the PSF acts as a low-pass filter, we can choose some grid in sky coordinates\footnote{We are ignoring the curvature of the sky, as we are only concerned with small regions.} on which it is well-sampled.  For such a grid with positions $\{\bm{s}_i\}$, we can reconstruct the continuous PSF for a discrete output pixel exactly using sinc interpolation:
 \begin{align}
 \phi(\bm{r},\bm{x}_i) =\;& \sum_{i} \phi(\bm{s}_i,\bm{x}_j)\,
     S(\bm{r}-\bm{s}_i)
@@ -115,11 +118,21 @@ with
 
 Note that \eqnref{expanded-likelihood-new} has exactly the same form as \eqnref{expanded-likelihood}, with the following substitutions:
 \begin{align}
-\bm{F}\bm{I} \longrightarrow  \bm{\Psi} \\
-\bm{F} \longrightarrow \bm{\Phi} \\
-\bm{g} \longrightarrow \bm{h}
+\bm{F}\bm{I} \longrightarrow  \bm{\Psi} \label{eqn:image-translate} \\
+\bm{F} \longrightarrow \bm{\Phi} \label{eqn:covar-translate} \\
+\bm{g} \longrightarrow \bm{h} \label{eqn:model-translate}
 \end{align}
-That is, we have defined anequivalent image $\Psi$ with a compact and spatially invariant PSF $S$ but a much more extended and spatially complex pixel covariance matrix $\Phi^{-1}$; we have transform the PSF from an operation on the model to a component of the image and its covariance matrix.
+That is, we have defined a mathematically equivalent image $\Psi$ with a compact and spatially invariant \emph{mathematical} PSF $S$ but a much more extended and spatially complex pixel covariance matrix $\Phi^{-1}$ that accounts for the \emph{physical} PSF.  This formulation of the likelihood has some advantages even for individual images:
+\begin{itemize}
+\item The new image $\Psi$ is well-sampled and has no missing pixels, even if the original data is undersampled or irregularly sampled.
+\item Fitting algorithms can more easily use lookup tables and/or analytic integration to evaluate PSF-convolved galaxy models, since the mathematical PSF $S$ is constant and analytic.
+\end{itemize}
+
+However, some important measurement algorithms -- notably adaptive moments and aperture photometry -- aren't defined with respect to a likelihood, and instead assume pixels are independent.  These measurements cannot be performed on these equivalent-likelihood images directly.  \cite{2015arXiv151206879Z} use the term \emph{proper image} to refer to images for which these sorts of algorithms are valid, defining it as an image with independent and constant noise.  We consider this definition to be too restrictive -- constant noise is not necessary for such algorithms to be valid, and as we will see in \secref{whitening} imposing it as a requirement is probably undesirable.
+
+However, the biggest disadvantage of this formulation is simply that $\bm{\Phi}$ is enormous.  For a single $4000 \times 4000$ LSST CCD with a $40\times 40$-pixel PSF, $\bm{\Phi}$ will have approximately $5.1\times 10^{10}$ nonzero elements (205 GB in single precision).  Some of that information is certainly redundant, and a clever compression scheme may be able to reduce the size considerably.
+
+We will ignore these computational challenges for now and return to them later in the paper.
 
 \subsection{Coaddition}
 
@@ -134,23 +147,167 @@ which is equivalent to summing the (negative) log likelihoods:
         + \frac{1}{2}\bm{h}^T\!\bm{\Phi}_n\bm{h} \right]
 \end{align}
 Because the grid on which we evaluate $\bm{h}$ is in sky coordinates, we can choose it to be the same for every input image (the only requirement is that it be fine enough to adequately sample the most compact input PSF).
-This makes $L$ linear in $\bm{\Psi}_i$ and $\bm{\Phi}_i$, so we can just sum these:
+This makes $L$ linear in $\bm{\Psi}_n$ and $\bm{\Phi}_n$, so we can just sum these:
 \begin{align}
     L =\;& \frac{k_c}{2} - \bm{\Psi}_c^T\!\bm{h} + \frac{1}{2}\bm{h}^T\!\bm{\Phi}_c\bm{h} \\
     k_c \equiv\;& \sum_n k_n \\
     \bm{\Psi}_c \equiv\;& \sum_n \bm{\Psi}_n \\
     \bm{\Phi}_c \equiv\;& \sum_n \bm{\Phi}_n
 \end{align}
-This is clearly the same as \eqnref{expanded-likelihood-new}, with the coadded $k$, $\bm{\Psi}$ and $\bm{\Phi}$ replacing the single-epoch ones.  This coadd is a ``sufficient statistic'' -- it allows us to exactly compute a the likelihood for any arbitrary model -- for the full dataset, with only two assumptions:
+This is clearly the same as \eqnref{expanded-likelihood-new}, with the coadded $k_c$, $\bm{\Psi}_c$ and $\bm{\Phi}_c$ replacing the single-epoch ones.  This coadd is a ``sufficient statistic'' -- it allows us to exactly compute a the likelihood for any arbitrary model -- for the full dataset, with only two assumptions:
 \begin{itemize}
 \item The true sky must be the same at all epochs (no variability or motion).
 \item We must be able to choose a common grid on which all input PSFs are well-sampled.
 \end{itemize}
-The second condition is always met by real data, and any kind of coadd is inappropriate when the former is not a reasonable approximation.
+Any kind of coadd is inappropriate when the former is not a reasonable approximation, and the second condition is always met by real data.
 
-Unfortunately, this approach is likely computationally impractical in general.  The simplest reason is that $\bm{\Phi}$ is enormous.  For a typical $4000 \times 4000$ coadd image comprised of images with $40\times 40$-pixel PSFs, $\bm{\Phi}$ will have approximately $5.1\times 10^10$ nonzero elements (205 GB in single precision).  Some of that information is certainly redundant, and a clever compression scheme may be able to reduce the size considerably.  But even in this case, the extent of the covariance matrix ($\bm{\Phi}^{-1}$) would make it more difficult to use the likelihood in this form, mostly because common algorithms such as aperture photometry and weighted-moment shapes implicitly assume independent pixels.  The computational tradeoffs for forward-modeling algorithms are less clear; the fact that the effective PSF -- now just a Sinc kernel -- is the same everywhere may enable fast lookup-table methods for model evaluation.
+We refer to $\bm{\Psi}_c$ as a \emph{likelihood coadd}, and $\{\bm{\Psi}_i\}$ as \emph{likelihood images}, as these are the only images for which summing them exactly combines the information from the per-epoch likelhoods.  If the PSF and noise are constant, a pixel value in one of these images is proportional to the likelihood of an isolated point source being present at the center of that pixel (see \secref{detection}), but these conditions are only approximately met in real data.
 
-\subsection{Detection Maps}
+Likelihood coadds suffer from the same computational advantages and disadvantages as the single-frame likelihoods.  While the coadded quantities $\bm{\Psi}_c,\bm{\Phi}_c$ do represent a compression of the single epoch quantities $\{\bm{\Psi}_i,\bm{\Phi}_i\}$, this isn't nearly enough to make up for the increase in data size due to the transformation \eqnref{covar-translate} from a diagonal covariance matrix to an extended, complex, fully-pixelized covariance matrix.
+
+\section{Decorrelated Coadds}
+\label{sec:decorrelated-coadds}
+
+While it is necessary to transform from regular images to likelihood images in order to build an optimal coadd, once a likelihood coadd has been built we can in principle do the reverse transformation to return to a ``regular'' coadd: one with a non-trivial PSF and a diagonal covariance matrix.  This operation is known as decorrelation, and it's a matter of finding a symmetric decomposition of $\bm{\Phi}_c$:
+\begin{align}
+\bm{\Phi}_c = \bm{A}^T \bm{D} \bm{A}
+\label{eqn:decorrelate-factorization}
+\end{align}
+such that $\bm{A}$ is invertible and $\bm{D}$ is diagonal.  This allows us to rewrite the likelihood \eqnref{expanded-likelihood-new} as
+\begin{align}
+L
+=\;& \frac{k}{2} - \bm{\Psi}_c^T\!\bm{A}^{-1}\!\bm{A}\bm{h}
+    + \frac{1}{2}\bm{h}^T\!\bm{A}^T\!\bm{D}\bm{A}\bm{h}\\
+=\;& \frac{k}{2} - \bm{\Psi}_c^T\!\bm{A}^{-1}\bm{D}^{-1}\!\bm{D}\bm{A}\bm{h}
+    + \frac{1}{2}\left(\bm{A}\bm{h}\right)^T\!\bm{D}\left(\bm{A}\bm{h}\right)
+    \\
+=\;& \frac{k}{2} - \bm{I}_c^T\!\bm{F}_c\bm{g}_c
+    + \frac{1}{2}\bm{g}_c^T\!\bm{F}_c\bm{g}_c
+\label{eqn:likelihood-decorrelated}
+\end{align}
+with
+\begin{align}
+\bm{I}_c \equiv\;& \bm{D}\bm{A}^{-T}\bm{\Psi}_c \\
+\bm{g}_c \equiv\;& \bm{A}\bm{h} \\
+\bm{F}_c \equiv\;& \bm{D}
+\end{align}
+
+These decorrelated coadds have independent pixels, making them suitable for adaptive moments, apertures and other common source measurement algorithms that aren't derived from a likelihood.  They're also much more visually similar to typical astronomical images.  But they don't solve the storage problem associated with likelihood coadds: while the covariance matrix $\bm{F}_c$ is now diagonal and hence easy to store, the complexity has been transferred to the PSF $\bm{A}$.  Unlike the per-epoch PSFs $\phi$, $\bm{A}$ is not slowly varying on large scales (due to discontinuities where the set of input images to the coadd changes), and hence it requires essentially the same storage as the likelihood covariance matrix $\bm{\Phi}$ if we want to preserve all information.
+
+Moreover, computing the factorization \eqnref{decorrelate-factorization} is a hard problem -- even for a relatively small patch of sky, this is a factorization of a large sparse matrix.  It is also important to note that the matrix $\bm{A}$ is the effective PSF of the decorrelated coadd image, and hence its inverse is a deconvolution.  This is a hint that $\bm{A}$ may intrinsically be singular -- or, perhaps, that solutions with nonsingular $\bm{A}$ may not be useful, as they may imply a non-local effective PSF.  We do not need to compute the inverse of $\bm{A}$ directly, however; we just need to find a solution $\bm{I}_c$ to the equation
+\begin{align}
+\bm{\Psi}_c =\;& \bm{A}^{T}\bm{D}^{-1}\bm{I}_c
+\end{align}
+which we can achieve by first solving for $\bm{b}$ in
+\begin{align}
+\bm{\Psi}_c =\;& \bm{A}^{T}\bm{b}
+\label{eqn:decorrelate-image-equation}
+\end{align}
+and then setting
+\begin{align}
+\bm{I}_c =\;& \bm{D}\bm{b}
+\end{align}
+What \eqnref{decorrelate-image-equation} shows is that we don't really need to compute the deconvolution kernel -- instead, we need to find an image $\bm{b}$ that is equal to the likelihood coadd $\bm{\Psi}_c$ when convolved by the transpose of the decorrelated coadd PSF $\bm{A}^T$.  While this is a deconvolution, it is an entirely reasonable one, because we know the likelihood coadd has effectively been convolved twice by this PSF already: once by the actual observational system, and again when we transformed from regular images to likelihood images.  No noise has been added since the second convolution, so it should be entirely reversible.
+
+\subsection{Noise Whitening}
+\label{sec:whitening}
+
+Instead of merely decorrelating the noise, we could use the same factorization \eqnref{decorrelate-factorization} to go one step further and whiten the noise:
+\begin{align}
+L
+=\;& \frac{k}{2} - \bm{\Psi}_c^T\!\bm{A}^{-1}\bm{D}^{-\frac{1}{2}}
+    \!\bm{D}^{\frac{1}{2}}\!\bm{A}\bm{h}
+    + \frac{1}{2}\left(\bm{D}^{-\frac{1}{2}}\!\bm{A}\bm{h}\right)^T\!
+    \!\left(\bm{D}^{\frac{1}{2}}\!\bm{A}\bm{h}\right)
+    \\
+=\;& \frac{k}{2} - \bm{I}_w^T\!\bm{F}_w\bm{g}_w
+    + \frac{1}{2}\bm{g}_w^T\!\bm{F}_w\bm{g}_w
+\label{eqn:likelihood-whitened}
+\end{align}
+and
+\begin{align}
+\bm{I}_w \equiv\;& \bm{D}^{-\frac{1}{2}}\bm{A}^{-T}\bm{\Psi}_c \\
+\bm{g}_w \equiv\;& \bm{D}^{\frac{1}{2}}\bm{A}\bm{h} \\
+\bm{F}_w \equiv\;& \bm{\mathcal{I}}
+\end{align}
+This is no more difficult computationally, and it generates a \emph{proper} image according to the definition of \cite{2015arXiv151206879Z}.  But it actually makes our coadd behave less like a regular single-epoch image, where we expect the variance in each pixel to be the approximately the square root of the pixel value.  Whitening the noise forces us to track these per-pixel noise variations (which do not simply disappear) as part of the PSF, decoupling the mathematical PSF from our physical intuition of what a PSF should represent.  This \emph{must} make the PSF different for bright sources and faint sources, which is allowed by our model simply because every pixel has a different PSF.  Flux-dependent PSFs are extremely problematic for even likelihood-based measurement algorithms, because it allows small inaccuracies in the PSF model to produce serious biases in fluxes.  It also invalidates non-likelihood measurements, such as aperture fluxes and adaptive moments, as these include no correction for the PSF and hence are only useful when the PSF is approximately the same for all objects -- a condition explicitly broken when the PSF varies on the spatial scale of individual objects to account for photon noise from sources.
+
+This fast PSF spatial variation also exacerbates the storage problem.  With decorrelated coadds, these object-scale spatial variations near bright sources are captured in the pixel variances, which is already compact enough to store, ensuring the PSF is slowly varying except at discontinuities in the input image set, which may allow a clever compression scheme to make it computationally tractable.  For whitened coadds, the pixel variances don't need to be stored at all, but the PSF spatial variation can be much more complex, making it even less likely it can be compressed effectively.
+
+\subsection{Kaiser Coadds}
+\label{sec:kaiser-coadds}
+
+The first development of a generally-useful (and at least theoretically practical) optimal coaddition algorithm is due to Kaiser \citep{Kaiser2001}, and more recently revisited by \cite{2015arXiv151206879Z}.  This approach is completely general with respect to the model of the sky, but it relies on several assumptions about the data:
+\begin{itemize}
+\item The input images must be Nyquist-sampled with no missing pixels (to allow discrete Fourier transforms and resampling of the image).
+\item The variance in each input image must be constant and uncorrelated.
+\item The PSF of each input image must be constant.
+\end{itemize}
+At least for ground-based optical data, these assumptions are at least approximately correct in the neighborhood of any particular source, but they are manifestly incorrect on the scale of a full sensor.  However, the method also implicitly assumes that all input images are defined on the same pixel grid.  While images that meet the above requirements can be resampled to the required coordinate system exactly (using sinc interpolation) or close enough to it (using e.g. Lanczos as an approximation to sinc), this resampling will in general introduce correlations in the noise and produce a spatially-varying PSF.
+
+We will ignore these complications for now, however, which lets us rewrite \eqnref{psi-def} and \eqnref{phi-def} in the continuous limit as
+\begin{align}
+\Psi(\bm{r}) =\;& \frac{1}{\sigma^2} \int\!d^2\bm{x}\,
+    \phi(\bm{r}-\bm{x}) \, I(\bm{x})
+    \\
+\Phi(\bm{r}_1,\bm{r}_2) =\;&
+    \frac{1}{\sigma^2} \int\!d^2\bm{x}\,
+    \phi(\bm{r}_1-\bm{x}) \, \phi(\bm{r}_2-\bm{x})
+\end{align}
+where we have redefined the constant point function $\phi(\bm{x})$ -- it is now a function of only one variable -- and defined the constant per-pixel variance as $\sigma^2$.  Note that the output coordinate system $\bm{r}$ is the same as the input coordinate system $\bm{x}$.
+
+We can now Fourier transform both quantities (we must transform both arguments of $\Phi$).  Our treatment of the image data as continuous is justified by our assumption that the data and PSF are well-sampled, and this also allows us to use discrete Fourier transforms instead of continuous transforms in practice with appropriate padding to account for periodicity.  We will continue to use continuous notation here for simplicity.  The Fourier transforms are
+\begin{align}
+\tilde{\Psi}(\bm{k}) =\;&
+    \frac{\tilde{\phi}(\bm{k}) \, \tilde{I}(\bm{k})}{\sigma^2} \\
+\tilde{\Phi}(\bm{k}_1,\bm{k}_2) =\;&
+    2\pi\delta(\bm{k}_1+\bm{k}_2)
+    \frac{\tilde{\phi}(\bm{k}_1) \, \tilde{\phi}(\bm{k}_2)}{\sigma^2}
+\end{align}
+where $\delta(\bm{k})$ is the Dirac delta function, indicating that $\tilde{\Phi}$ is really only a one-parameter quantity, since it is nonzero only for $\bm{k}_1 = -\bm{k}_2$.  Abusing notation, we will proceed to write it simply as
+\begin{align}
+\tilde{\Phi}(\bm{k}) =\;&
+    2\pi \frac{\tilde{\phi}(-\bm{k}) \tilde{\phi}(\bm{k})}{\sigma^2}
+    =\; 2\pi \frac{\tilde{\phi}^*(\bm{k}) \tilde{\phi}(\bm{k})}{\sigma^2}
+\end{align}
+where $\tilde{\phi}^*(\bm{k})=\tilde{\phi(-\bm{k})}$ because $\phi(\bm{x})$ is real.
+
+Because the Fourier transform is a linear operation, we can choose to sum $\tilde{\Psi}$ and $\tilde{\Phi}$ to coadd them, yielding the Fourier transform of the likelihood coadd:
+\begin{align}
+\tilde{\Psi}_c(\bm{k}) =\;& \sum_n \tilde{\Psi}_n(\bm{k})
+    =\; \sum_n \frac{\tilde{\phi}_n(\bm{k}) \, \tilde{I}_n(\bm{k})}
+                    {\sigma_n^2} \\
+\tilde{\Phi}_c(\bm{k}) =\;&
+    \sum_n \tilde{\Phi}_n(\bm{k})
+    =\; 2\pi \sum_n
+    \frac{\tilde{\phi}^*_n(\bm{k}) \, \tilde{\phi}_n(\bm{k})}{\sigma_n^2}
+\end{align}
+In this formulation, it is trivial to decorrelate the noise -- the variance in Fourier mode $\bm{k}$ is just $\tilde{\Phi}(\bm{k})$, and hence we can just divide the Fourier-space image by the square root of $\tilde{\Phi}$:
+\begin{align}
+    \tilde{I}_c(\bm{k}) =\;
+        \frac{\tilde{\Psi}_c(\bm{k})}{\sqrt{\tilde{\Phi_c(\bm{k})}}}
+    =\;
+        \frac{
+            \sum\limits_n \frac{
+                \tilde{\phi}_n(\bm{k}) \, \tilde{I}_n(\bm{k})
+            }{
+                \sigma_n^2
+            }
+        }{
+            \sqrt{
+                2\pi \sum\limits_n
+                \frac{
+                    \tilde{\phi}^*_n(\bm{k}) \, \tilde{\phi}_n(\bm{k})
+                }{
+                    \sigma_n^2
+                }
+            }
+        }
+\end{align}
+This appears to whitens the noise in addition to decorrelating it, without the undesirable PSF behavior discussed in \secref{whitening} -- but that's just because we've already explicitly ignored per-pixel variance differences in the assumptions that went into this method.
+
+\section{Source Detection}
+\label{sec:detection}
 
 One area where $\Psi$ and $\Phi$ are practical (and in frequent use) is source detection.  The traditional approach to source detection assumes a single point source model, with any background already subtracted from the image:
 \begin{align}
@@ -202,34 +359,6 @@ We detect by appling a threshold to a \emph{detection map} - an image of $\nu$. 
 Maximum likelihood detections are biased, however, and the significance should not be interpreted as a formal statement about the probability that the detection is real.  In all realistic scenarios the prior cannot be ignored, and it is the posterior probability that must be used when calculating false detection rates.  A simple unnormalized power law prior as proposed by \cite{1998PASP..110..727H} does not work.  For now, we consider this problem beyond the scope of this paper.
 
 With or without a prior, however, the fact that isolated point source detection utilizes only the diagonal of $\bm{\Phi}$ holds, making this approach to detection practical on both individual images and on coadds, even in the presence of noise or on undersampled images.  Extending this approach to resolved sources or multiple sources exactly requires at least some off-diagonal elements of $\bm{\Phi}$, in addition to solving a higher-dimensional optimization problem.  In practice, it is more common to use the algorithm for isolated point sources as a heuristic for detecting superpositions of sources, by identifying peaks in $\nu$ within an above-threshold region as candidates for deblending and more careful signal-to-noise evaluation.  Similarly, simply binning or smoothing the $\nu$ image may result in an adequate approximation for the detection of faint extended sources.
-
-\section{Decorrelated Coadds}
-\label{sec:decorrelated-coadds}
-
-
-
-\subsection{Kaiser Coadds}
-\label{sec:kaiser-coadds}
-
-The first development of a generally-useful (and at least theoretically practical) optimal coaddition algorithm is due to Kaiser \citep{Kaiser2001}, and more recently revisited by \cite{2015arXiv151206879Z}.  This approach is completely general with respect to the model of the sky, but it relies on several assumptions about the data:
-\begin{itemize}
-\item The input images must be Nyquist-sampled with no missing pixels (to allow discrete Fourier transforms and resampling of the image).
-\item The variance in each input image must be constant and uncorrelated.
-\item The PSF of each input image must be constant.
-\end{itemize}
-At least for ground-based optical data, these assumptions are at least approximately correct in the neighborhood of any particular source, but they are manifestly incorrect on the scale of a full sensor.  However, the method also implicitly assumes that all input images are defined on the same pixel grid.  While images that meet the above requirements can be resampled to the required coordinate system exactly (using sinc interpolation) or close enough to it (using e.g. Lanczos as an approximation to sinc), this resampling will in general introduce correlations in the noise and produce a spatially-varying PSF.
-
-We will ignore these complications for now, however, which lets us rewrite \eqnref{psi-def} and \eqnref{phi-def} in the continuous limit as
-\begin{align}
-\Psi(\bm{r}) =\;& \frac{1}{\sigma^2} \int\!d^2\bm{x}\,
-    \phi(\bm{r}-\bm{x}) \, I(\bm{x})
-    \\
-\Phi(\bm{r}_1,\bm{r}_2) =\;&
-    \frac{1}{\sigma^2} \int\!d^2\bm{x}\,
-    \phi(\bm{r}_1-\bm{x}) \, \phi(\bm{r}_2-\bm{x})
-\end{align}
-where we have redefined the constant point function to $\phi(\bm{x})$, highlighted the $\bm{x}$-dependence of $\bm{I}$, and defined the constant per-pixel variance as $\sigma^2$.  Note that the output coordinate system $\bm{r}$ is the same as the input pixel grid $\bm{x}$
-
 
 
 \bibliographystyle{plainnat}
